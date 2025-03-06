@@ -156,7 +156,9 @@ jobs:
         with:
           index-annotations: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
-          sources: ${{ fromJson(steps.collect.outputs.sources) }}
+          sources: |
+            ghcr.io/check-spelling-sandbox/fuzzy-spoon@sha256:85a9280cf227f3a81c690dbccc4b338a3fa8e951f14b4d030eae1056a88f5d20
+            ghcr.io/check-spelling-sandbox/fuzzy-spoon@sha256:ce10d0e9ef54a1587a7c34d3f30750f373fff181cd4858a41b0bcfa0eda077d1
 
       - name: Generate artifact attestation
         id: attestation
