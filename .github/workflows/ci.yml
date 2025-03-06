@@ -2,6 +2,11 @@ name: CI
 on:
   push:
   workflow_dispatch:
+    inputs:
+      run_id:
+        type: number
+        description: Run ID
+        required: true
 
 env:
   REGISTRY: ghcr.io
@@ -9,7 +14,6 @@ env:
 
 jobs:
   build-arch:
-    if: false
     name: Build
 
     permissions:
@@ -31,9 +35,11 @@ jobs:
 
     steps:
       - name: Checkout
+        if: ${{ ! inputs.run_id }}
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
+        if: ${{ ! inputs.run_id }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -41,12 +47,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
+        if: ${{ ! inputs.run_id }}
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
       - name: Build and push Docker image
+        if: ${{ ! inputs.run_id }}
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -56,6 +64,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Generate artifact attestation
+        if: ${{ ! inputs.run_id }}
         id: attestation
         uses: actions/attest-build-provenance@v2
         with:
@@ -64,6 +73,7 @@ jobs:
           push-to-registry: true
 
       - name: Generate artifacts
+        if: ${{ ! inputs.run_id }}
         shell: bash
         env:
           attestation_url: ${{ steps.attestation.outputs.attestation-url }}
@@ -78,6 +88,7 @@ jobs:
           ) > outputs.yml
 
       - name: Upload artifact
+        if: ${{ ! inputs.run_id }}
         uses: actions/upload-artifact@v4
         with:
           name: outputs-${{ matrix.name }}
@@ -91,8 +102,8 @@ jobs:
       attestations: write
       id-token: write
 
-    # needs:
-    #   - build-arch
+    needs:
+      - build-arch
 
     runs-on: ubuntu-latest
     steps:
@@ -112,14 +123,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           q: '"'
-          run_id: 13707711668
+          run_id: ${{ inputs.run_id }}
         run: |
           gh run download \
             -R "$GITHUB_REPOSITORY" \
             ${run_id:-$GITHUB_RUN_ID} \
             -p 'outputs-*'
           get_field() {
-            field="$1" perl -ne 'next unless s/$ENV{field}: //;print' "$output"
+            field="$1" perl -ne 'next unless s/$ENV{field}: //; print' "$output"
           }
           prefix=$(grep sources: call-docker-manifest-create-action/action.yml|tail -1|perl -pe 's/\S+.*/  /')
           for output in outputs-*/outputs.yml; do
@@ -141,7 +152,7 @@ jobs:
               echo '```'
               echo
             ) >> "$GITHUB_STEP_SUMMARY"
-            echo "$prefix$REGISTRY/$IMAGE_NAME@$digest" >> call-docker-manifest-create-action/action.yml
+            echo "$prefix$REGISTRY/$IMAGE_NAME@$digest" | tee -a sources >> call-docker-manifest-create-action/action.yml
           done
           echo "sources=$(cat sources|perl -pe 's/^/"/;s/$/"/'|jq -c -s '.')" >> $GITHUB_OUTPUT
           (
