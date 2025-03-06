@@ -1,0 +1,140 @@
+name: CI
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-arch:
+    name: Build
+
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: amd
+          - os: ubuntu-24.04-arm
+            name: arm
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Generate artifact attestation
+        id: attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate artifacts
+        shell: bash
+        env:
+          attestation_url: ${{ steps.attestation.outputs.attestation-url }}
+          image_id: ${{ steps.push.outputs.imageid }}
+        run: |
+          (
+            echo "image_id: $image_id"
+            echo "attestation_url: $attestation_url"
+          ) > outputs.yml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-${{ matrix.name }}
+          path: outputs.yml
+
+  combine-images:
+    name: Combine images
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    needs:
+      - build-arch
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        if: false
+        uses: actions/checkout@v4
+
+      - name: Install crane
+        id: install-crane
+        uses: check-spelling/gh-program-downloader@v0.0.1
+        with:
+          repository: google/go-containerregistry
+          file-re: ^crane
+          destination: "${{ github.workspace }}/../crane"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Debug
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          q: '"'
+        run: |
+          gh run download \
+            -R "$GITHUB_REPOSITORY" \
+            -p 'outputs-*'
+          for output in outputs-*/outputs.yml; do
+            arch=$(echo "$output" |perl -pe 's,/.*,,;s/outputs-//')
+            attestation_url=$(perl -ne 'next unless s/attestation_url: //;print' $output)
+            sha=$(curl -q -s -L "$attestation_url/download"| jq -r .dsseEnvelope.payload|base64 -d|jq -r '.subject[].digest.sha256')
+            (
+              echo '```json'
+              echo '{'
+              echo "  ${q}arch${q}: ${q}$arch${q},"
+              echo "  ${q}sha${q}: ${q}$sha${q},"
+              echo "  ${q}attestation_url${q}: ${q}$attestation_url${q}"
+              echo '}'
+              echo '```'
+              echo
+            ) >> "$GITHUB_STEP_SUMMARY"
+            echo "$REGISTRY/$IMAGE_NAME@sha256:$sha" >> refs
+          done
+
+          ../crane index append $(head -1 refs) $(tail +2 refs|xargs -n1 echo -m) -t $REGISTRY/$IMAGE_NAME:$GITHUB_SHA
