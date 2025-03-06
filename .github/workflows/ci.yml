@@ -97,7 +97,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        if: false
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
@@ -122,6 +121,7 @@ jobs:
           get_field() {
             field="$1" perl -ne 'next unless s/$ENV{field}: //;print' "$output"
           }
+          prefix=$(grep sources: call-docker-manifest-create-action/action.yml|tail -1|perl -pe 's/\S+.*/  /')
           for output in outputs-*/outputs.yml; do
             arch=$(echo "$output" |perl -pe 's,/.*,,;s/outputs-//')
             digest=$(get_field digest)
@@ -141,9 +141,15 @@ jobs:
               echo '```'
               echo
             ) >> "$GITHUB_STEP_SUMMARY"
-            echo "$REGISTRY/$IMAGE_NAME@$digest" >> sources
+            echo "$prefix$REGISTRY/$IMAGE_NAME@$digest" >> call-docker-manifest-create-action/action.yml
           done
           echo "sources=$(cat sources|perl -pe 's/^/"/;s/$/"/'|jq -c -s '.')" >> $GITHUB_OUTPUT
+          (
+            echo '```yml'
+            cat call-docker-manifest-create-action/action.yml
+            echo '```'
+            echo
+          ) >> "$GITHUB_STEP_SUMMARY"
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -151,14 +157,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      - uses: int128/docker-manifest-create-action@v2
+      - uses: ./call-docker-manifest-create-action
         id: build
         with:
           index-annotations: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
-          sources: |
-            ghcr.io/check-spelling-sandbox/fuzzy-spoon@sha256:85a9280cf227f3a81c690dbccc4b338a3fa8e951f14b4d030eae1056a88f5d20
-            ghcr.io/check-spelling-sandbox/fuzzy-spoon@sha256:ce10d0e9ef54a1587a7c34d3f30750f373fff181cd4858a41b0bcfa0eda077d1
 
       - name: Generate artifact attestation
         id: attestation

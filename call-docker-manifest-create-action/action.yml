@@ -1,0 +1,30 @@
+name: Call docker-manifest-create-action
+description: Shim to call docker-manifest-create-action
+
+inputs:
+  push:
+    description: ''
+    required: false
+    default: 'true'
+  index-annotations:
+    description: ''
+    required: false
+  tags:
+    description: ''
+    required: false
+
+outputs:
+  digest:
+    description: Digest of the created manifest
+    value: ${{ steps.call.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+  - id: call
+    uses: int128/docker-manifest-create-action@v2
+    with:
+      push: ${{ inputs.push }}
+      index-annotations: ${{ inputs.index-annotations }}
+      tags: ${{ inputs.tags }}
+      sources: |
