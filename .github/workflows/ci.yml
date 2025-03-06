@@ -9,7 +9,6 @@ env:
 
 jobs:
   build-arch:
-    if: false
     name: Build
 
     permissions:
@@ -68,10 +67,13 @@ jobs:
         env:
           attestation_url: ${{ steps.attestation.outputs.attestation-url }}
           image_id: ${{ steps.push.outputs.imageid }}
+          digest: ${{ steps.push.outputs.digest }}
         run: |
           (
             echo "image_id: $image_id"
             echo "attestation_url: $attestation_url"
+            echo "digest: $digest"
+            echo "pull_url: $REGISTRY/$IMAGE_NAME:$digest"
           ) > outputs.yml
 
       - name: Upload artifact
@@ -88,22 +90,14 @@ jobs:
       attestations: write
       id-token: write
 
-    # needs:
-    #   - build-arch
+    needs:
+      - build-arch
 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         if: false
         uses: actions/checkout@v4
-
-      - name: Install crane
-        id: install-crane
-        uses: check-spelling/gh-program-downloader@v0.0.1
-        with:
-          repository: google/go-containerregistry
-          file-re: ^crane
-          destination: "${{ github.workspace }}/../crane"
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -112,32 +106,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Debug
+      - name: Collect
+        id: collect
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           q: '"'
-          run_id: 13704510562
+          # run_id: 13704510562
         run: |
           gh run download \
             -R "$GITHUB_REPOSITORY" \
             ${run_id:-$GITHUB_RUN_ID} \
             -p 'outputs-*'
+          get_field() {
+            field="$1" perl -ne 'next unless s/$ENV{field}: //;print' "$output"
+          }
           for output in outputs-*/outputs.yml; do
             arch=$(echo "$output" |perl -pe 's,/.*,,;s/outputs-//')
-            attestation_url=$(perl -ne 'next unless s/attestation_url: //;print' $output)
+            digest=$(get_field digest)
+            pull_url=$(get_field pull_url)
+            attestation_url=$(get_field attestation_url)
+
             sha=$(curl -q -s -L "$attestation_url/download"| jq -r .dsseEnvelope.payload|base64 -d|jq -r '.subject[].digest.sha256')
+
             (
               echo '```json'
               echo '{'
               echo "  ${q}arch${q}: ${q}$arch${q},"
               echo "  ${q}sha${q}: ${q}$sha${q},"
-              echo "  ${q}attestation_url${q}: ${q}$attestation_url${q}"
+              echo "  ${q}attestation_url${q}: ${q}$attestation_url${q}",
+              echo "  ${q}pull_url${q}: ${q}$pull_url${q}"
               echo '}'
               echo '```'
               echo
             ) >> "$GITHUB_STEP_SUMMARY"
-            echo "$REGISTRY/$IMAGE_NAME@sha256:$sha" >> refs
+            echo "$REGISTRY/$IMAGE_NAME@$digest" >> sources
           done
+          echo "sources=$(cat sources|perl -pe 's/^/"/;s/$/"/'|jq -c -s '.')" >> $GITHUB_OUTPUT
 
-          ../crane index append $(head -1 refs) $(tail +2 refs|xargs -n1 echo -m) -t $REGISTRY/$IMAGE_NAME:$GITHUB_SHA
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - uses: int128/docker-manifest-create-action@v2
+        id: build
+        with:
+          index-annotations: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          sources: ${{ fromJson(steps.collect.outputs.sources) }}
+
+      - name: Generate artifact attestation
+        id: attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
